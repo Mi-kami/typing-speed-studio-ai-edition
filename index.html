@@ -209,7 +209,6 @@
   .char.correct{color:var(--text);}
   .char.incorrect{color:var(--error);background:var(--error-soft);border-radius:3px;box-shadow:0 0 0 1px rgba(255,106,94,.2);}
   .char.extra{color:var(--error);text-decoration:underline;opacity:.7;}
-  .char.current{ }
   .char.current::before{
     content:'';position:absolute;left:-1px;top:-2px;bottom:-2px;width:2px;background:var(--caret);
     box-shadow:0 0 8px var(--caret);animation:blink 1s step-end infinite;
@@ -891,7 +890,12 @@ async function fetchAIPassage(category, mode, length, lang){
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ category, mode, length, lang })
   });
-  if(!resp.ok) throw new Error("AI passage request failed: " + resp.status);
+  if(!resp.ok){
+    let reason = "HTTP " + resp.status;
+    try{ const errBody = await resp.json(); reason = errBody.reason || errBody.error || reason; }catch(e){}
+    console.error("[TSS] AI passage request failed:", reason);
+    throw new Error(reason);
+  }
   const data = await resp.json();
   const text = (data.text || "").trim();
   if(!text) throw new Error("Empty AI passage response");
@@ -909,7 +913,12 @@ async function fetchAICoaching(result){
       mistakes: result.mistakes, category: result.category, mode: result.mode, topMistypes
     })
   });
-  if(!resp.ok) throw new Error("AI coaching request failed: " + resp.status);
+  if(!resp.ok){
+    let reason = "HTTP " + resp.status;
+    try{ const errBody = await resp.json(); reason = errBody.reason || errBody.error || reason; }catch(e){}
+    console.error("[TSS] AI coaching request failed:", reason);
+    throw new Error(reason);
+  }
   const data = await resp.json();
   const feedback = (data.feedback || "").trim();
   if(!feedback) throw new Error("Empty AI coaching response");
@@ -922,7 +931,7 @@ async function buildContentAsync(){
     try{
       return await fetchAIPassage(state.category, state.mode, aiLengthFor(state.mode), state.lang);
     }catch(err){
-      toast("AI passage unavailable — using local bank instead");
+      toast("AI passage unavailable (see browser console for details) — using local bank instead");
       return buildContentStatic();
     }
   }
