@@ -2,7 +2,7 @@
 // Holds the Gemini API key server-side. Never expose GEMINI_API_KEY in frontend code.
 // Set GEMINI_API_KEY in Netlify: Site settings -> Environment variables.
 
-const MODEL = "gemini-2.5-flash-lite";
+const MODEL = "gemini-2.5-flash";
 
 const PROMPTS = {
   general: (n) => `Write a natural, flowing passage of plain English prose, about ${n} words, suitable for a typing practice test. Everyday vocabulary, varied sentence length. Plain text only: no markdown, no quotation marks, no lists, no headers.`,
