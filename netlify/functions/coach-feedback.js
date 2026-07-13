@@ -36,27 +36,43 @@ Write 2-3 short sentences of specific, encouraging, non-generic coaching feedbac
 
   try {
     const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
+        },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 220 }
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 400,
+            thinkingConfig: { thinkingBudget: 0 }
+          }
         })
       }
     );
 
     if (!resp.ok) {
       const errText = await resp.text();
-      return { statusCode: 502, body: JSON.stringify({ error: "Gemini API error", detail: errText }) };
+      return { statusCode: 502, body: JSON.stringify({ error: "Gemini API error", status: resp.status, detail: errText }) };
     }
 
     const data = await resp.json();
-    const feedback = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    const candidate = data?.candidates?.[0];
+    const feedback = candidate?.content?.parts?.[0]?.text?.trim();
 
     if (!feedback) {
-      return { statusCode: 502, body: JSON.stringify({ error: "Empty response from Gemini" }) };
+      const reason = candidate?.finishReason || "NO_TEXT";
+      return {
+        statusCode: 502,
+        body: JSON.stringify({
+          error: "Gemini returned no usable text",
+          reason,
+          detail: JSON.stringify(data).slice(0, 500)
+        })
+      };
     }
 
     return {

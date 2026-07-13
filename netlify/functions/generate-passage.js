@@ -40,27 +40,44 @@ exports.handler = async (event) => {
 
   try {
     const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
+        },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.9, maxOutputTokens: 500 }
+          generationConfig: {
+            temperature: 0.9,
+            maxOutputTokens: 800,
+            thinkingConfig: { thinkingBudget: 0 }
+          }
         })
       }
     );
 
     if (!resp.ok) {
       const errText = await resp.text();
-      return { statusCode: 502, body: JSON.stringify({ error: "Gemini API error", detail: errText }) };
+      return { statusCode: 502, body: JSON.stringify({ error: "Gemini API error", status: resp.status, detail: errText }) };
     }
 
     const data = await resp.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    const candidate = data?.candidates?.[0];
+    const text = candidate?.content?.parts?.[0]?.text?.trim();
 
     if (!text) {
-      return { statusCode: 502, body: JSON.stringify({ error: "Empty response from Gemini" }) };
+      // Distinguish common silent-failure causes so the frontend can show something useful
+      const reason = candidate?.finishReason || "NO_TEXT";
+      return {
+        statusCode: 502,
+        body: JSON.stringify({
+          error: "Gemini returned no usable text",
+          reason,
+          detail: JSON.stringify(data).slice(0, 500)
+        })
+      };
     }
 
     // Strip stray markdown fences if the model added them despite instructions
