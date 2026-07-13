@@ -1,7 +1,7 @@
 // netlify/functions/coach-feedback.js
 // Holds the Gemini API key server-side. Never expose GEMINI_API_KEY in frontend code.
 
-const MODEL = "gemini-2.5-flash-lite";
+const MODEL = "gemini-3.5-flash";
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
