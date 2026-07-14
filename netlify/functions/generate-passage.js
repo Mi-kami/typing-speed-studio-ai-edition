@@ -1,8 +1,11 @@
 // netlify/functions/generate-passage.js
-// Holds the Gemini API key server-side. Never expose GEMINI_API_KEY in frontend code.
-// Set GEMINI_API_KEY in Netlify: Site settings -> Environment variables.
+// Tries Gemini first, falls back to Groq (Llama 3.3 70B) if Gemini fails for
+// any reason (quota, rate limit, model restriction, outage). Two independent
+// providers means two independent quota buckets. Keys stay server-side.
+// Set GEMINI_API_KEY and GROQ_API_KEY in Netlify: Site settings -> Environment variables.
 
-const MODEL = "gemini-3.5-flash";
+const GEMINI_MODEL = "gemini-2.5-flash";
+const GROQ_MODEL = "llama-3.3-70b-versatile";
 
 const PROMPTS = {
   general: (n) => `Write a natural, flowing passage of plain English prose, about ${n} words, suitable for a typing practice test. Everyday vocabulary, varied sentence length. Plain text only: no markdown, no quotation marks, no lists, no headers.`,
@@ -14,14 +17,72 @@ const PROMPTS = {
   programming: (n, lang) => `Write a short, realistic, syntactically correct ${lang} code snippet (a function or small class, roughly 10-18 lines) using common idioms a working developer would actually write. Return ONLY the raw code with normal indentation. No markdown code fences, no explanation, no comments longer than a few words.`
 };
 
+function cleanText(text) {
+  return text.replace(/^```[a-z]*\n?/i, "").replace(/```$/, "").trim();
+}
+
+async function tryGemini(prompt) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
+
+  const resp = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.9, maxOutputTokens: 800, thinkingConfig: { thinkingBudget: 0 } }
+      })
+    }
+  );
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Gemini ${resp.status}: ${errText.slice(0, 300)}`);
+  }
+
+  const data = await resp.json();
+  const candidate = data?.candidates?.[0];
+  const text = candidate?.content?.parts?.[0]?.text?.trim();
+  if (!text) throw new Error(`Gemini returned no text (${candidate?.finishReason || "NO_TEXT"})`);
+
+  return cleanText(text);
+}
+
+async function tryGroq(prompt) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error("GROQ_API_KEY not configured");
+
+  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.9,
+      max_tokens: 800
+    })
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Groq ${resp.status}: ${errText.slice(0, 300)}`);
+  }
+
+  const data = await resp.json();
+  const text = data?.choices?.[0]?.message?.content?.trim();
+  if (!text) throw new Error("Groq returned no text");
+
+  return cleanText(text);
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
-  }
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return { statusCode: 500, body: JSON.stringify({ error: "GEMINI_API_KEY is not configured on the server" }) };
   }
 
   let payload;
@@ -38,57 +99,24 @@ exports.handler = async (event) => {
   const promptFn = PROMPTS[category] || PROMPTS.general;
   const prompt = category === "programming" ? promptFn(length, lang) : promptFn(length);
 
+  const errors = [];
+
   try {
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": apiKey
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.9,
-            maxOutputTokens: 800,
-            thinkingConfig: { thinkingBudget: 0 }
-          }
-        })
-      }
-    );
-
-    if (!resp.ok) {
-      const errText = await resp.text();
-      return { statusCode: 502, body: JSON.stringify({ error: "Gemini API error", status: resp.status, detail: errText }) };
-    }
-
-    const data = await resp.json();
-    const candidate = data?.candidates?.[0];
-    const text = candidate?.content?.parts?.[0]?.text?.trim();
-
-    if (!text) {
-      // Distinguish common silent-failure causes so the frontend can show something useful
-      const reason = candidate?.finishReason || "NO_TEXT";
-      return {
-        statusCode: 502,
-        body: JSON.stringify({
-          error: "Gemini returned no usable text",
-          reason,
-          detail: JSON.stringify(data).slice(0, 500)
-        })
-      };
-    }
-
-    // Strip stray markdown fences if the model added them despite instructions
-    const cleaned = text.replace(/^```[a-z]*\n?/i, "").replace(/```$/, "").trim();
-
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: cleaned })
-    };
+    const text = await tryGemini(prompt);
+    return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, provider: "gemini" }) };
   } catch (err) {
-    return { statusCode: 502, body: JSON.stringify({ error: "Request to Gemini failed", detail: String(err) }) };
+    errors.push(String(err.message || err));
   }
+
+  try {
+    const text = await tryGroq(prompt);
+    return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, provider: "groq" }) };
+  } catch (err) {
+    errors.push(String(err.message || err));
+  }
+
+  return {
+    statusCode: 502,
+    body: JSON.stringify({ error: "Both providers failed", reason: "ALL_PROVIDERS_FAILED", detail: errors.join(" | ") })
+  };
 };
